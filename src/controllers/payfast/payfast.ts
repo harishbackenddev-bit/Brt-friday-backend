@@ -35,38 +35,22 @@ export const initiatePayment = async (req: Request, res: Response) => {
 // HANDLE PAYFAST NOTIFICATION CONTROLLER
 // ============================================
 export const handlePayfastNotification = async (req: Request, res: Response) => {
-  console.log('📩 PayFast Webhook controller Hit!');
-  console.log('📝 ALL fields from PayFast:', Object.keys(req.body));
-  console.log('📝 Full body:', JSON.stringify(req.body, null, 2));
-  
-  // ✅ Check for any fields with empty values
-  const emptyFields = Object.keys(req.body).filter(key => req.body[key] === '' || req.body[key] === null);
-  if (emptyFields.length > 0) {
-    console.log('📝 Empty fields:', emptyFields);
-  }
-  
   try {
-    // ✅ req.body now has the parsed multipart/form-data fields
-    const payload = req.body;
-    
-    if (Object.keys(payload).length === 0) {
-      console.error('❌ Empty body received');
-      return res.status(200).send('OK');
+    const response = await handlePayfastNotificationService(req.body, res);
+
+    if (!response.success) {
+      return res.status(httpStatusCode.BAD_REQUEST).json(response);
     }
 
-    console.log('📩 PayFast ITN Received:', JSON.stringify(payload, null, 2));
-    
-    const response = await handlePayfastNotificationService(payload, res);
-    
-    // ✅ Always return 200 OK
-    console.log('✅ Webhook processed, returning OK');
-    return res.status(httpStatusCode.OK).send('OK');
+    return res.status(httpStatusCode.OK).json(response);
   } catch (error: any) {
-    console.error('❌ Webhook Error:', error);
-    return res.status(httpStatusCode.OK).send('OK');
+    const { code, message } = errorParser(error);
+    return res.status(code || httpStatusCode.INTERNAL_SERVER_ERROR).json({
+      success: false,
+      message: message || "An error occurred"
+    });
   }
 };
-
 
 // ============================================
 // GET TICKET PAYMENT STATUS CONTROLLER

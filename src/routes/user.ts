@@ -1,10 +1,9 @@
 import { Router } from "express";
-import { login, signup, userdata, forgotPassword, getDashboardStats,deleteAUser, updateAUser, profileupdate, 
+import { login, signup, userdata, forgotPassword, getDashboardStats, deleteAUser, updateAUser, profileupdate,
     updateAPassword } from "../controllers/user/user";
 import { checkAuth } from "src/middleware/check-auth";
-import {uploadProfile} from "src/config/multerConfig";
+import { uploadProfile } from "src/config/multerConfig";
 import { initiatePayment, handlePayfastNotification, getAticketPaymentStatus, getAticket, requestCallback } from "../controllers/payfast/payfast";
-import multer from "multer";
 
 const router = Router();
 
@@ -23,14 +22,16 @@ router.route("/change-password").post(checkAuth, updateAPassword)
 // PAYFAST ROUTES
 // ============================================
 
-// ✅ IMPORTANT: PayFast sends multipart/form-data
-// Use multer to parse it - no files, just fields
-const upload = multer();
-
-// ✅ Webhook route with multer to parse multipart/form-data
-router.post("/payfast/notify", upload.none(), handlePayfastNotification);
+// 1. Initiate Payment - Frontend calls this to start payment
+router.post("/initiate-payment", initiatePayment);
 
 // 2. PayFast Webhook - PayFast calls this after payment
+//
+// PayFast ITN notifications are sent as application/x-www-form-urlencoded.
+// The global express.urlencoded({ verify }) middleware in app.ts is what
+// actually parses this request and captures req.rawBody — no route-level
+// parser needed here, since by the time a request reaches this router the
+// global one has already consumed the stream.
 router.post("/payfast/notify", handlePayfastNotification);
 
 // 3. Check Payment Status by ticket ID

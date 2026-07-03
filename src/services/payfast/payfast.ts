@@ -9,15 +9,13 @@ import {
   preparePayFastData,
   validateITN,
   formatTicketResponse,
-  CHECKOUT_SIGNATURE_FIELD_ORDER,
-  generateITNSignature
 } from '../../utils/payfast.utils';
 import { ticketModel } from "../../models/ticket/ticket-schema";
 import { callbackRequestModel } from "../../models/callback/callback-schema";
 import { PAYFAST_CONFIG } from "../../config/payfast.config";
 
 // ============================================
-// INITIATE PAYMENT SERVICE - Only creates temp record, NOT ticket
+// INITIATE PAYMENT SERVICE
 // ============================================
 export const initiatePaymentService = async (payload: any, res: Response) => {
   const {
@@ -42,23 +40,36 @@ export const initiatePaymentService = async (payload: any, res: Response) => {
     const transactionId = generateTransactionId();
     const ticketId = generateTicketId();
 
-    // ✅ Store user data temporarily in session or Redis
-    // Or store in a temp collection
-    const tempData = {
-      ticketId,
-      transactionId,
-      firstName,
-      lastName,
-      email,
+    const ticket = new ticketModel({
+      ticketId: ticketId,
+      firstName: firstName,
+      lastName: lastName,
+      email: email,
       phoneNumber: phoneNumber || '',
-      plan,
-      ticketData,
-      amount,
-      createdAt: new Date()
-    };
+      projectDescription: ticketData?.projectDescription || '',
+      selectedRole: ticketData?.selectedRole || '',
+      businessUrl: ticketData?.businessUrl || '',
+      companyName: ticketData?.companyName || '',
+      companyUrl: ticketData?.companyUrl || '',
+      linkedInUrl: ticketData?.linkedInUrl || '',
+      investmentFocus: ticketData?.investmentFocus || '',
+      selectedPlan: plan,
+      paymentMethod: 'payfast',
+      paymentStatus: 'pending',
+      amountPaid: amount,
+      totalAmount: 2000,
+      outstandingBalance: plan === 'full' ? 0 : (2000 - amount),
+      transactionId: transactionId,
+      paymentDate: new Date(),
+      status: 'pending',
+      eventName: 'BRT150 Demo Day',
+      eventDate: new Date('2026-11-21'),
+      nextDueDate: plan === 'partial' ? new Date('2026-12-21') : null,
+      isGuest: true,
+      submittedAt: new Date(),
+    });
 
-    // You can store this in Redis with TTL or in a temp collection
-    // For now, we'll just return the data and create ticket after payment confirmation
+    await ticket.save();
 
     const paymentData = preparePayFastData({
       amount,
@@ -72,20 +83,11 @@ export const initiatePaymentService = async (payload: any, res: Response) => {
 
     return {
       success: true,
-      message: "Payment initiated successfully",
+      message: "Initiate Payment successful",
       paymentUrl: PAYFAST_CONFIG.paymentUrl,
       paymentData: paymentData,
       transactionId: transactionId,
       ticketId: ticketId,
-      // ✅ Send user data back so frontend can store temporarily
-      userData: {
-        firstName,
-        lastName,
-        email,
-        phoneNumber: phoneNumber || '',
-        plan,
-        ticketData
-      }
     };
 
   } catch (error: any) {
@@ -98,71 +100,108 @@ export const initiatePaymentService = async (payload: any, res: Response) => {
 };
 
 // ============================================
-// HANDLE PAYFAST NOTIFICATION SERVICE - Creates ticket ONLY after payment
-// ============================================
-// services/payfast/payfast.service.ts
-
-// ============================================
 // HANDLE PAYFAST NOTIFICATION SERVICE
 // ============================================
-// services/payfast/payfast.service.ts - Updated signature verification
-
-
-
 export const handlePayfastNotificationService = async (payload: any, res: Response) => {
   try {
-    console.log('📩 PayFast service webhook Hit!');
-    
     const data = payload;
 
-    // 1. Check required fields
-    if (!data.m_payment_id || !data.payment_status) {
-      console.error('❌ Missing required fields');
+    console.log("PayFast ITN Received:", data);
+
+    const paymentStatus = data.payment_status;
+    const transactionId = data.m_payment_id;
+    const pfPaymentId = data.pf_payment_id;
+
+    // PayFast sends amount_gross, not amount
+    const amount = Number(data.amount_gross || 0);
+
+    if (isNaN(amount)) {
+      throw new Error("Invalid payment amount received from PayFast.");
+    }
+
+    const ticketId = data.custom_str1 || "";
+    const plan = data.custom_str2 || "";
+
+    const ticket = await ticketModel.findOne({
+      $or: [
+        { transactionId },
+        { ticketId }
+      ]
+    });
+
+    if (!ticket) {
       return {
         success: false,
-        message: "Missing required fields",
+        message: "Ticket not found.",
       };
     }
 
-    // 2. ✅ Verify signature using ITN-specific function
-    const receivedSignature = data.signature;
-    const generatedSignature = generateITNSignature(data);
-    
-    console.log('🔐 Generated Signature:', generatedSignature);
-    console.log('🔐 Received Signature:', receivedSignature);
+    if (paymentStatus === "COMPLETE") {
+      const isFullPayment = plan === "full";
 
-    if (generatedSignature !== receivedSignature) {
-      console.error('❌ Invalid signature');
-      
-      // Debug: Show what's being signed
-      const debugData = { ...data };
-      delete debugData.signature;
-      const keys = Object.keys(debugData).sort();
-      let debugString = '';
-      keys.forEach(key => {
-        if (debugData[key] !== undefined && debugData[key] !== '') {
-          if (debugString) debugString += '&';
-          debugString += `${key}=${encodeURIComponent(debugData[key])}`;
-        }
-      });
-      console.log('📝 Signed string (ITN):', debugString);
-      
-      return {
-        success: false,
-        message: "Invalid signature",
-      };
+      const outstandingBalance = isFullPayment
+        ? 0
+        : Math.max(0, 2000 - amount);
+
+      await ticketModel.findByIdAndUpdate(
+        ticket._id,
+        {
+          paymentStatus: isFullPayment ? "completed" : "partial",
+          status: "approved",
+          amountPaid: amount,
+          outstandingBalance,
+          paymentDate: new Date(),
+          transactionId,
+          pfPaymentId,
+        },
+        { new: true }
+      );
+
+      console.log("✅ Payment completed:", ticket.ticketId);
     }
-    console.log('✅ Signature verified');
 
-    // ... rest of your code
+    if (paymentStatus === "PENDING") {
+      await ticketModel.findByIdAndUpdate(
+        ticket._id,
+        {
+          paymentStatus: "pending",
+        },
+        { new: true }
+      );
+
+      console.log("⏳ Payment pending:", ticket.ticketId);
+    }
+
+    if (
+      paymentStatus === "FAILED" ||
+      paymentStatus === "CANCELLED"
+    ) {
+      await ticketModel.findByIdAndUpdate(
+        ticket._id,
+        {
+          paymentStatus: "failed",
+          status: "cancelled",
+        },
+        { new: true }
+      );
+
+      console.log("❌ Payment failed:", ticket.ticketId);
+    }
+
+    return {
+      success: true,
+      message: "Payment notification processed successfully.",
+    };
   } catch (error: any) {
-    console.error('❌ Webhook Processing Error:', error);
+    console.error("ITN Processing Error:", error);
+
     return {
       success: false,
-      message: error.message || 'Webhook processing failed',
+      message: error.message || "ITN Processing failed.",
     };
   }
 };
+
 
 // ============================================
 // GET TICKET PAYMENT STATUS SERVICE
@@ -173,6 +212,9 @@ export const getAticketPaymentStatusService = async (
   res: Response
 ) => {
   try {
+    // 👇 "id" here is actually the custom ticketId (e.g. "BRT-2026-0042"),
+    // NOT a Mongo ObjectId — findById() would never match it (and can
+    // throw a CastError). Look it up by the ticketId field instead.
     const ticket = await ticketModel.findOne({ ticketId: id });
 
     if (!ticket) {
@@ -210,6 +252,7 @@ export const getAticketService = async (
   res: Response
 ) => {
   try {
+    // 👇 same fix — look up by ticketId, not Mongo _id
     const ticket = await ticketModel.findOne({ ticketId: id });
 
     if (!ticket) {
@@ -236,18 +279,18 @@ export const getAticketService = async (
   }
 };
 
-// ============================================
-// REQUEST CALLBACK SERVICE
-// ============================================
+
+
 export const requestCallbackService = async (payload: any, res: Response) => {
   try {
+
     const { email, phone, whatsapp, plan } = payload;
 
     if (!email || !phone || !whatsapp || !plan) {
-      return {
+      return res.status(422).json({
         success: false,
         message: "All fields are required.",
-      };
+      });
     }
 
     const callback = await callbackRequestModel.create({
@@ -264,10 +307,10 @@ export const requestCallbackService = async (payload: any, res: Response) => {
     };
 
   } catch (error: any) {
-    console.error('Callback Request Error:', error);
+    console.error('ITN Processing Error:', error);
     return {
       success: false,
-      message: error.message || 'Failed to submit callback request',
+      message: error.message || 'ITN Processing failed',
     };
   }
 };

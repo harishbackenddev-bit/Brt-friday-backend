@@ -37,5 +37,5 @@ export const PAYFAST_CONFIG: PayFastConfig = {
   
   // ✅ FIXED: For local development, use ngrok URL
   // Set this in .env: PAYFAST_NOTIFY_URL=https://your-ngrok-url.ngrok.io/api/payfast/notify
-  notifyUrl: process.env.PAYFAST_NOTIFY_URL || 'http://localhost:8000/api/payfast/notify',
+  notifyUrl: process.env.PAYFAST_NOTIFY_URL || 'https://brt-friday-backend.onrender.com/api/payfast/notify',
 };

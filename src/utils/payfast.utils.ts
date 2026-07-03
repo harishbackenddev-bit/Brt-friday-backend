@@ -8,13 +8,14 @@ import { PAYFAST_CONFIG } from '../config/payfast.config';
 
 /**
  * For ITN signature validation, PayFast expects:
- * 1. Alphabetical order of fields (A-Z)
- * 2. URL encoding with %20 for spaces (NOT +)
- * 3. All fields except 'signature'
- * 
+ * 1. Fields in the SAME ORDER they were posted (NOT alphabetical)
+ * 2. URL encoding with '+' for spaces (PHP urlencode() style, NOT %20)
+ * 3. All fields except 'signature' (including empty ones)
+ *
  * For checkout/onsite signature, PayFast uses a specific field order
- * (CHECKOUT_SIGNATURE_FIELD_ORDER) with + encoding.
- * 
+ * (CHECKOUT_SIGNATURE_FIELD_ORDER), also with '+' encoding, and empty
+ * fields are omitted entirely.
+ *
  * Source: https://developers.payfast.co.za/docs#step_2_signature
  */
 export const CHECKOUT_SIGNATURE_FIELD_ORDER = [
@@ -29,48 +30,37 @@ export const CHECKOUT_SIGNATURE_FIELD_ORDER = [
 ];
 
 /**
- * URL encode for PayFast checkout (spaces become +)
+ * URL encode to match PayFast's expected format (PHP urlencode() style):
+ * spaces become '+', not '%20'. Used for BOTH checkout and ITN signing —
+ * the only real difference between the two is field ORDER, not encoding.
  */
-const pfEncodeCheckout = (value: string): string => {
+const pfEncode = (value: string): string => {
   return encodeURIComponent(value).replace(/%20/g, '+');
 };
 
 /**
- * URL encode for ITN validation (spaces become %20)
- */
-const pfEncodeITN = (value: string): string => {
-  return encodeURIComponent(value);
-};
-
-/**
  * Generate MD5 signature for PayFast.
- * 
+ *
  * @param data - The payment / ITN data to sign
- * @param fieldOrder - Optional explicit field order
- * @param isITN - If true, uses %20 encoding; if false, uses + encoding
- */
-// utils/payfast.utils.ts - Fixed version
-
-/**
- * Generate MD5 signature for PayFast.
- * 
- * @param data - The payment / ITN data to sign
- * @param fieldOrder - Optional explicit field order
- * @param isITN - If true, uses %20 encoding and includes empty values
+ * @param fieldOrder - Optional explicit field order (checkout only)
+ * @param isITN - If true, preserves as-received field order and includes
+ *                empty values (matches how PayFast itself signs ITN posts).
+ *                If false (checkout), empty fields are stripped and the
+ *                explicit fieldOrder is used.
  */
 export const generateSignature = (
   data: Record<string, any>,
   fieldOrder?: string[],
   isITN: boolean = false
 ): string => {
-  // ✅ Get ALL keys except 'signature' - DO NOT filter out empty values for ITN
+  // Determine which keys are valid for signing
   let validKeys: string[];
-  
+
   if (isITN) {
-    // ✅ For ITN: Include ALL fields (even empty ones) - PayFast includes them
+    // ✅ For ITN: include ALL fields (even empty ones) - PayFast includes them
     validKeys = Object.keys(data).filter(key => key !== 'signature');
   } else {
-    // ✅ For checkout: Filter out empty values
+    // ✅ For checkout: filter out empty values
     validKeys = Object.keys(data).filter(
       key =>
         key !== 'signature' &&
@@ -80,14 +70,15 @@ export const generateSignature = (
     );
   }
 
-  // For ITN, use alphabetical order
-  // For checkout, use the provided field order
+  // Determine key ORDER
   let orderedKeys: string[];
   if (isITN) {
-    // ✅ ITN uses alphabetical order (A-Z)
-    orderedKeys = validKeys.sort();
+    // ✅ ITN uses the field order AS RECEIVED from PayFast — NOT alphabetical.
+    // This relies on Object.keys(data) preserving insertion/POST order,
+    // which holds for plain JS objects with string keys.
+    orderedKeys = validKeys;
   } else if (fieldOrder) {
-    // ✅ Checkout uses specific field order
+    // ✅ Checkout uses the specific PayFast field order
     orderedKeys = [
       ...fieldOrder.filter(key => validKeys.includes(key)),
       ...validKeys.filter(key => !fieldOrder.includes(key)),
@@ -96,23 +87,21 @@ export const generateSignature = (
     orderedKeys = validKeys;
   }
 
-  const encodeFn = isITN ? pfEncodeITN : pfEncodeCheckout;
-
   let pfOutput = '';
   for (const key of orderedKeys) {
     const value = data[key];
-    // ✅ For ITN: Include empty values as empty string
+    // Include empty values as empty string (matters for ITN)
     const stringValue = value !== undefined && value !== null ? String(value).trim() : '';
-    
+
     if (pfOutput !== '') {
       pfOutput += '&';
     }
-    pfOutput += `${key}=${encodeFn(stringValue)}`;
+    pfOutput += `${key}=${pfEncode(stringValue)}`;
   }
 
   // Add passphrase if set
   if (PAYFAST_CONFIG.passphrase) {
-    pfOutput += `&passphrase=${encodeFn(PAYFAST_CONFIG.passphrase)}`;
+    pfOutput += `&passphrase=${pfEncode(PAYFAST_CONFIG.passphrase)}`;
   }
 
   // Generate MD5 signature
@@ -120,14 +109,43 @@ export const generateSignature = (
 };
 
 /**
- * Generate signature for ITN validation (uses alphabetical order + %20)
+ * Generate signature for ITN validation (as-received field order + '+' encoding)
+ * from an already-parsed object. Prefer generateITNSignatureFromRaw when the
+ * raw POST body is available — it removes any risk of order/encoding drift
+ * introduced by parsing and reconstructing the object.
  */
 export const generateITNSignature = (data: Record<string, any>): string => {
   return generateSignature(data, undefined, true);
 };
 
 /**
- * Generate signature for checkout (uses specific field order + +)
+ * Generate signature for ITN validation directly from the RAW
+ * application/x-www-form-urlencoded request body string, exactly as
+ * PayFast sent it. This is the most reliable method: it just strips the
+ * `signature` field out of the raw string and hashes what's left, with
+ * no decode/re-encode round-trip that could introduce a mismatch.
+ *
+ * Requires the raw body to have been captured, e.g. via:
+ *   express.urlencoded({ verify: (req, res, buf) => { req.rawBody = buf.toString('utf8'); } })
+ */
+export const generateITNSignatureFromRaw = (rawBody: string): string => {
+  const pairs = rawBody
+    .split('&')
+    .filter(pair => !pair.startsWith('signature='));
+
+  let pfOutput = pairs.join('&');
+
+  if (PAYFAST_CONFIG.passphrase) {
+    // Raw body is already urlencoded with '+' for spaces (standard
+    // application/x-www-form-urlencoded), matching pfEncode's behaviour.
+    pfOutput += `&passphrase=${pfEncode(PAYFAST_CONFIG.passphrase)}`;
+  }
+
+  return crypto.createHash('md5').update(pfOutput).digest('hex');
+};
+
+/**
+ * Generate signature for checkout (specific field order + '+' encoding)
  */
 export const generateCheckoutSignature = (data: Record<string, any>): string => {
   return generateSignature(data, CHECKOUT_SIGNATURE_FIELD_ORDER, false);
@@ -226,7 +244,7 @@ export const preparePayFastData = (params: {
     payment_method: 'cc',
   };
 
-  // ✅ Use checkout signature (specific field order + + encoding)
+  // ✅ Use checkout signature (specific field order + '+' encoding)
   const signature = generateCheckoutSignature(data);
   data.signature = signature;
 
@@ -234,7 +252,7 @@ export const preparePayFastData = (params: {
 };
 
 // ============================================
-// PAYFAST ITN VALIDATION
+// PAYFAST ITN VALIDATION (server-to-server confirmation with PayFast)
 // ============================================
 
 export const validateITN = async (data: Record<string, any>): Promise<boolean> => {
@@ -321,6 +339,7 @@ export const formatTicketResponse = (ticket: any) => {
 export default {
   generateSignature,
   generateITNSignature,
+  generateITNSignatureFromRaw,
   generateCheckoutSignature,
   generateTicketId,
   generateTransactionId,
