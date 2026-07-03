@@ -4,6 +4,7 @@ import { login, signup, userdata, forgotPassword, getDashboardStats,deleteAUser,
 import { checkAuth } from "src/middleware/check-auth";
 import {uploadProfile} from "src/config/multerConfig";
 import { initiatePayment, handlePayfastNotification, getAticketPaymentStatus, getAticket, requestCallback } from "../controllers/payfast/payfast";
+import multer from "multer";
 
 const router = Router();
 
@@ -22,8 +23,12 @@ router.route("/change-password").post(checkAuth, updateAPassword)
 // PAYFAST ROUTES
 // ============================================
 
-// 1. Initiate Payment - Frontend calls this to start payment
-router.post("/initiate-payment", initiatePayment);
+// ✅ IMPORTANT: PayFast sends multipart/form-data
+// Use multer to parse it - no files, just fields
+const upload = multer();
+
+// ✅ Webhook route with multer to parse multipart/form-data
+router.post("/payfast/notify", upload.none(), handlePayfastNotification);
 
 // 2. PayFast Webhook - PayFast calls this after payment
 router.post("/payfast/notify", handlePayfastNotification);

@@ -7,92 +7,130 @@ import { PAYFAST_CONFIG } from '../config/payfast.config';
 // ============================================
 
 /**
- * The EXACT field order PayFast uses when it recomputes the signature
- * for the onsite/checkout ("Process Payment") flow. This is NOT
- * alphabetical — that rule only applies to PayFast's separate REST /
- * Recurring Billing API. Getting this order wrong is the #1 cause of
- * "Generated signature does not match submitted signature".
+ * For ITN signature validation, PayFast expects:
+ * 1. Alphabetical order of fields (A-Z)
+ * 2. URL encoding with %20 for spaces (NOT +)
+ * 3. All fields except 'signature'
+ * 
+ * For checkout/onsite signature, PayFast uses a specific field order
+ * (CHECKOUT_SIGNATURE_FIELD_ORDER) with + encoding.
+ * 
  * Source: https://developers.payfast.co.za/docs#step_2_signature
  */
 export const CHECKOUT_SIGNATURE_FIELD_ORDER = [
-  // Merchant details
   'merchant_id', 'merchant_key', 'return_url', 'cancel_url', 'notify_url',
-  // Buyer detail
   'name_first', 'name_last', 'email_address', 'cell_number',
-  // Transaction details
   'm_payment_id', 'amount', 'item_name', 'item_description',
   'custom_int1', 'custom_int2', 'custom_int3', 'custom_int4', 'custom_int5',
   'custom_str1', 'custom_str2', 'custom_str3', 'custom_str4', 'custom_str5',
-  // Transaction options
   'email_confirmation', 'confirmation_address',
-  // Payment method
   'payment_method',
-  // Recurring billing details (only present for subscriptions)
   'subscription_type', 'billing_date', 'recurring_amount', 'frequency', 'cycles',
 ];
 
 /**
- * PayFast expects application/x-www-form-urlencoded style encoding,
- * where spaces are encoded as "+" (PHP urlencode / Python quote_plus
- * behavior). encodeURIComponent alone encodes spaces as "%20", which
- * will also break the signature on any field containing a space
- * (item_name, item_description, names, etc.).
+ * URL encode for PayFast checkout (spaces become +)
  */
-const pfEncode = (value: string): string => {
+const pfEncodeCheckout = (value: string): string => {
   return encodeURIComponent(value).replace(/%20/g, '+');
 };
 
 /**
+ * URL encode for ITN validation (spaces become %20)
+ */
+const pfEncodeITN = (value: string): string => {
+  return encodeURIComponent(value);
+};
+
+/**
  * Generate MD5 signature for PayFast.
- *
- * @param data       The payment / ITN data to sign.
- * @param fieldOrder Optional explicit field order to use (e.g.
- *                   CHECKOUT_SIGNATURE_FIELD_ORDER for the checkout flow).
- *                   If omitted, the natural key order of `data` is
- *                   preserved as-is — this is correct for ITN
- *                   validation, where you must sign the fields in the
- *                   order PayFast actually sent them, not reorder them.
+ * 
+ * @param data - The payment / ITN data to sign
+ * @param fieldOrder - Optional explicit field order
+ * @param isITN - If true, uses %20 encoding; if false, uses + encoding
+ */
+// utils/payfast.utils.ts - Fixed version
+
+/**
+ * Generate MD5 signature for PayFast.
+ * 
+ * @param data - The payment / ITN data to sign
+ * @param fieldOrder - Optional explicit field order
+ * @param isITN - If true, uses %20 encoding and includes empty values
  */
 export const generateSignature = (
   data: Record<string, any>,
-  fieldOrder?: string[]
+  fieldOrder?: string[],
+  isITN: boolean = false
 ): string => {
-  // Never include the signature field itself in the string being signed,
-  // and drop empty/null/undefined values as PayFast does.
-  const validKeys = Object.keys(data).filter(
-    key =>
-      key !== 'signature' &&
-      data[key] !== '' &&
-      data[key] !== null &&
-      data[key] !== undefined
-  );
+  // ✅ Get ALL keys except 'signature' - DO NOT filter out empty values for ITN
+  let validKeys: string[];
+  
+  if (isITN) {
+    // ✅ For ITN: Include ALL fields (even empty ones) - PayFast includes them
+    validKeys = Object.keys(data).filter(key => key !== 'signature');
+  } else {
+    // ✅ For checkout: Filter out empty values
+    validKeys = Object.keys(data).filter(
+      key =>
+        key !== 'signature' &&
+        data[key] !== '' &&
+        data[key] !== null &&
+        data[key] !== undefined
+    );
+  }
 
-  const orderedKeys = fieldOrder
-    ? [
-        ...fieldOrder.filter(key => validKeys.includes(key)),
-        // Any keys not in the known list get appended at the end rather
-        // than silently dropped, but in practice this array should stay empty —
-        // if it's not, you're sending a field PayFast doesn't recognize.
-        ...validKeys.filter(key => !fieldOrder.includes(key)),
-      ]
-    : validKeys;
+  // For ITN, use alphabetical order
+  // For checkout, use the provided field order
+  let orderedKeys: string[];
+  if (isITN) {
+    // ✅ ITN uses alphabetical order (A-Z)
+    orderedKeys = validKeys.sort();
+  } else if (fieldOrder) {
+    // ✅ Checkout uses specific field order
+    orderedKeys = [
+      ...fieldOrder.filter(key => validKeys.includes(key)),
+      ...validKeys.filter(key => !fieldOrder.includes(key)),
+    ];
+  } else {
+    orderedKeys = validKeys;
+  }
+
+  const encodeFn = isITN ? pfEncodeITN : pfEncodeCheckout;
 
   let pfOutput = '';
   for (const key of orderedKeys) {
-    const value = String(data[key]).trim();
+    const value = data[key];
+    // ✅ For ITN: Include empty values as empty string
+    const stringValue = value !== undefined && value !== null ? String(value).trim() : '';
+    
     if (pfOutput !== '') {
       pfOutput += '&';
     }
-    pfOutput += `${key}=${pfEncode(value)}`;
+    pfOutput += `${key}=${encodeFn(stringValue)}`;
   }
 
   // Add passphrase if set
   if (PAYFAST_CONFIG.passphrase) {
-    pfOutput += `&passphrase=${pfEncode(PAYFAST_CONFIG.passphrase)}`;
+    pfOutput += `&passphrase=${encodeFn(PAYFAST_CONFIG.passphrase)}`;
   }
 
   // Generate MD5 signature
   return crypto.createHash('md5').update(pfOutput).digest('hex');
+};
+
+/**
+ * Generate signature for ITN validation (uses alphabetical order + %20)
+ */
+export const generateITNSignature = (data: Record<string, any>): string => {
+  return generateSignature(data, undefined, true);
+};
+
+/**
+ * Generate signature for checkout (uses specific field order + +)
+ */
+export const generateCheckoutSignature = (data: Record<string, any>): string => {
+  return generateSignature(data, CHECKOUT_SIGNATURE_FIELD_ORDER, false);
 };
 
 // ============================================
@@ -161,9 +199,6 @@ export const preparePayFastData = (params: {
 }) => {
   const { amount, email, firstName, lastName, plan, ticketId, transactionId } = params;
 
-  // PayFast does NOT append any ticket/transaction reference to return_url
-  // by itself — we have to bake it in ourselves, or the return page has
-  // nothing to look the ticket up by.
   const returnUrlWithRef = `${PAYFAST_CONFIG.returnUrl}${
     PAYFAST_CONFIG.returnUrl.includes('?') ? '&' : '?'
   }ticketId=${encodeURIComponent(ticketId)}`;
@@ -191,8 +226,8 @@ export const preparePayFastData = (params: {
     payment_method: 'cc',
   };
 
-  // Generate signature using PayFast's required checkout field order
-  const signature = generateSignature(data, CHECKOUT_SIGNATURE_FIELD_ORDER);
+  // ✅ Use checkout signature (specific field order + + encoding)
+  const signature = generateCheckoutSignature(data);
   data.signature = signature;
 
   return data;
@@ -204,9 +239,6 @@ export const preparePayFastData = (params: {
 
 export const validateITN = async (data: Record<string, any>): Promise<boolean> => {
   try {
-    // Repost exactly what PayFast sent us (minus nothing extra) to their
-    // validate endpoint — do not append merchant_id/merchant_key again,
-    // PayFast just wants back the same payload it posted to your notify_url.
     const validationData = new URLSearchParams();
     Object.keys(data).forEach(key => {
       if (data[key] !== undefined && data[key] !== null && data[key] !== '') {
@@ -223,6 +255,7 @@ export const validateITN = async (data: Record<string, any>): Promise<boolean> =
     });
 
     const responseText = await response.text();
+    console.log('🔍 ITN Validation Response:', responseText);
     return responseText === 'VALID';
   } catch (error) {
     console.error('ITN Validation Error:', error);
@@ -287,6 +320,8 @@ export const formatTicketResponse = (ticket: any) => {
 
 export default {
   generateSignature,
+  generateITNSignature,
+  generateCheckoutSignature,
   generateTicketId,
   generateTransactionId,
   calculatePaymentAmounts,
