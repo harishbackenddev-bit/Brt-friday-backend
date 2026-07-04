@@ -7,7 +7,13 @@ import {
   handlePayfastNotificationService,
   getAticketPaymentStatusService,
   getAticketService,
-  requestCallbackService
+  requestCallbackService,
+  requestPartialPaymentService,
+  listPartialPaymentsService,
+  sendPaymentLinkService,
+  markDepositPaidService,
+  sendBalanceLinkService,
+  markFullyPaidService
 } from "../../services/payfast/payfast";
 
 // ============================================
@@ -101,15 +107,115 @@ export const getAticket = async (req: Request, res: Response) => {
 
 
 
-export const requestCallback = async (req: Request, res: Response) => {
+ 
+// ============================================
+// USER: REQUEST PARTIAL PAYMENT LINK
+// ============================================
+export const requestPartialPayment = async (req: Request, res: Response) => {
   try {
-    const response = await requestCallbackService(req.body, res);
+    const response = await requestPartialPaymentService(req.body, res);
+    if (!response.success) {
+      return res.status(httpStatusCode.BAD_REQUEST).json(response);
+    }
+    return res.status(httpStatusCode.CREATED).json(response);
+  } catch (error: any) {
+    const { code, message } = errorParser(error);
+    return res.status(code || httpStatusCode.INTERNAL_SERVER_ERROR).json({
+      success: false,
+      message: message || "An error occurred",
+    });
+  }
+};
+ 
+// ============================================
+// ADMIN: LIST PARTIAL PAYMENT REQUESTS
+// ============================================
+export const listPartialPayments = async (req: Request, res: Response) => {
+  try {
+    const response = await listPartialPaymentsService(req.query);
     return res.status(httpStatusCode.OK).json(response);
   } catch (error: any) {
     const { code, message } = errorParser(error);
     return res.status(code || httpStatusCode.INTERNAL_SERVER_ERROR).json({
       success: false,
-      message: message || "An error occurred"
+      message: message || "An error occurred",
     });
   }
 };
+ 
+// ============================================
+// ADMIN: SEND PAYMENT LINK (deposit)
+// ============================================
+export const sendPaymentLink = async (req: Request, res: Response) => {
+  try {
+    const response = await sendPaymentLinkService(req.params.ticketId, req.body);
+    if (!response.success) {
+      return res.status(httpStatusCode.BAD_REQUEST).json(response);
+    }
+    return res.status(httpStatusCode.OK).json(response);
+  } catch (error: any) {
+    const { code, message } = errorParser(error);
+    return res.status(code || httpStatusCode.INTERNAL_SERVER_ERROR).json({
+      success: false,
+      message: message || "An error occurred",
+    });
+  }
+};
+ 
+// ============================================
+// ADMIN: MARK DEPOSIT PAID
+// ============================================
+export const markDepositPaid = async (req: Request, res: Response) => {
+  try {
+    const response = await markDepositPaidService(req.params.ticketId, req.body);
+    if (!response.success) {
+      return res.status(httpStatusCode.BAD_REQUEST).json(response);
+    }
+    return res.status(httpStatusCode.OK).json(response);
+  } catch (error: any) {
+    const { code, message } = errorParser(error);
+    return res.status(code || httpStatusCode.INTERNAL_SERVER_ERROR).json({
+      success: false,
+      message: message || "An error occurred",
+    });
+  }
+};
+ 
+// ============================================
+// ADMIN: SEND BALANCE PAYMENT LINK
+// ============================================
+export const sendBalanceLink = async (req: Request, res: Response) => {
+  try {
+    const response = await sendBalanceLinkService(req.params.ticketId, req.body);
+    if (!response.success) {
+      return res.status(httpStatusCode.BAD_REQUEST).json(response);
+    }
+    return res.status(httpStatusCode.OK).json(response);
+  } catch (error: any) {
+    const { code, message } = errorParser(error);
+    return res.status(code || httpStatusCode.INTERNAL_SERVER_ERROR).json({
+      success: false,
+      message: message || "An error occurred",
+    });
+  }
+};
+ 
+// ============================================
+// ADMIN: MARK FULLY PAID
+// ============================================
+export const markFullyPaid = async (req: Request, res: Response) => {
+  try {
+    const response = await markFullyPaidService(req.params.ticketId, req.body);
+    if (!response.success) {
+      return res.status(httpStatusCode.BAD_REQUEST).json(response);
+    }
+    return res.status(httpStatusCode.OK).json(response);
+  } catch (error: any) {
+    const { code, message } = errorParser(error);
+    return res.status(code || httpStatusCode.INTERNAL_SERVER_ERROR).json({
+      success: false,
+      message: message || "An error occurred",
+    });
+  }
+};
+ 

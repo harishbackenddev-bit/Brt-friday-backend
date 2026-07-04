@@ -77,7 +77,10 @@ const ticketSchema = new Schema(
 
     paymentMethod: {
       type: String,
-      enum: ["payfast", "card", "bank", "mobile"], // ✅ Added 'payfast'
+      // ✅ Added 'payfast_manual' for staff-generated PayFast payment
+      // links used in the partial-payment workflow (as opposed to
+      // 'payfast', which is the automated checkout redirect flow)
+      enum: ["payfast", "payfast_manual", "card", "bank", "mobile"],
       required: true,
     },
 
@@ -108,6 +111,9 @@ const ticketSchema = new Schema(
       default: null,
     },
 
+    // For manual partial payments this doubles as the "PayFast
+    // Reference" field from the workflow doc (whichever payment —
+    // deposit or balance — was most recently confirmed).
     pfPaymentId: {
       type: String,
       default: null,
@@ -133,7 +139,7 @@ const ticketSchema = new Schema(
     status: {
       type: String,
       enum: ["pending", "approved", "rejected", "cancelled", "checked-in"],
-      default: "pending", // Changed from "approved" to "pending"
+      default: "pending",
     },
 
     // Check-in Details
@@ -151,6 +157,59 @@ const ticketSchema = new Schema(
 
     contactValue: {
       type: String,
+      default: null,
+    },
+
+    // ============================================
+    // MANUAL PARTIAL PAYMENT WORKFLOW
+    // (see: BRT150 Manual Partial Payment Workflow spec)
+    // Only meaningful when selectedPlan === "partial".
+    // ============================================
+    partialWorkflowStatus: {
+      type: String,
+      enum: [
+        "Requested",
+        "Awaiting Payment Link",
+        "Payment Link Sent",
+        "Deposit Paid",
+        "Balance Outstanding",
+        "Balance Link Sent",
+        "Fully Paid",
+        "Ticket Issued",
+      ],
+      default: null, // null for full-payment tickets, which don't use this state machine
+    },
+
+    // Deposit amount agreed for this attendee (may differ from a flat 50%)
+    depositAmount: {
+      type: Number,
+      default: null,
+    },
+
+    // Manually pasted PayFast link for the deposit payment
+    paymentLink: {
+      type: String,
+      default: null,
+    },
+
+    // Manually pasted PayFast link for the remaining balance
+    balancePaymentLink: {
+      type: String,
+      default: null,
+    },
+
+    depositPaidAt: {
+      type: Date,
+      default: null,
+    },
+
+    balancePaidAt: {
+      type: Date,
+      default: null,
+    },
+
+    ticketIssuedAt: {
+      type: Date,
       default: null,
     },
 
@@ -223,6 +282,7 @@ ticketSchema.index({ ticketId: 1 });
 ticketSchema.index({ email: 1 });
 ticketSchema.index({ status: 1 });
 ticketSchema.index({ paymentStatus: 1 });
+ticketSchema.index({ partialWorkflowStatus: 1 });
 ticketSchema.index({ createdAt: -1 });
 
 export const ticketModel = model("tickets", ticketSchema);

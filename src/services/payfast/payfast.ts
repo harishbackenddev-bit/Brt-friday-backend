@@ -459,3 +459,323 @@ export const requestCallbackService = async (payload: any, res: Response) => {
     };
   }
 };
+
+
+
+
+// ============================================
+// USER: REQUEST PARTIAL PAYMENT LINK
+// (User selects 'Partial Payment', enters contact details, clicks
+// 'Request Partial Payment Link'. NOT redirected to PayFast.)
+// ============================================
+export const requestPartialPaymentService = async (payload: any, res: Response) => {
+  const {
+    email,
+    firstName,
+    lastName,
+    phoneNumber,
+    whatsapp,
+    ticketData, // selectedRole, projectDescription, businessUrl, companyName, etc.
+  } = payload;
+ 
+  if (!email || !firstName || !lastName || !phoneNumber) {
+    return {
+      success: false,
+      message: "Missing required fields: email, firstName, lastName, phoneNumber",
+    };
+  }
+ 
+  try {
+    const ticketId = generateTicketId();
+ 
+    const ticket = new ticketModel({
+      ticketId,
+      firstName,
+      lastName,
+      email,
+      phoneNumber,
+      projectDescription: ticketData?.projectDescription || "",
+      selectedRole: ticketData?.selectedRole,
+      businessUrl: ticketData?.businessUrl || "",
+      companyName: ticketData?.companyName || "",
+      companyUrl: ticketData?.companyUrl || "",
+      linkedInUrl: ticketData?.linkedInUrl || "",
+      investmentFocus: ticketData?.investmentFocus || "",
+      selectedPlan: "partial",
+      paymentMethod: "payfast_manual",
+      paymentStatus: "pending",
+      amountPaid: 0,
+      totalAmount: 2000,
+      outstandingBalance: 2000,
+      status: "pending",
+      eventName: "BRT150 Demo Day",
+      eventDate: new Date("2026-11-21"),
+      isGuest: true,
+      submittedAt: new Date(),
+      contactMethod: whatsapp ? "WhatsApp" : "Email",
+      contactValue: whatsapp || email,
+      partialWorkflowStatus: "Requested",
+    });
+ 
+    await ticket.save();
+ 
+    // TODO: notify admin a new partial payment request came in (email/Slack),
+    // e.g. reuse the pattern from sendAdminCallbackNotification.
+ 
+    return {
+      success: true,
+      message: "Your request has been received. Our team will send you a secure PayFast payment link shortly.",
+      data: {
+        ticketId: ticket.ticketId,
+        status: ticket.partialWorkflowStatus,
+      },
+    };
+  } catch (error: any) {
+    console.error("Request Partial Payment Error:", error);
+    return {
+      success: false,
+      message: error.message || "Failed to submit partial payment request",
+    };
+  }
+};
+ 
+// ============================================
+// ADMIN: LIST PARTIAL PAYMENT REQUESTS (dashboard table)
+// ============================================
+export const listPartialPaymentsService = async (query: any) => {
+  try {
+    const filter: Record<string, any> = { selectedPlan: "partial" };
+ 
+    if (query.status) {
+      filter.partialWorkflowStatus = query.status;
+    }
+ 
+    const tickets = await ticketModel
+      .find(filter)
+      .sort({ createdAt: -1 })
+      .lean();
+ 
+    return {
+      success: true,
+      message: "Partial payment requests fetched successfully",
+      data: tickets,
+    };
+  } catch (error: any) {
+    console.error("List Partial Payments Error:", error);
+    return {
+      success: false,
+      message: error.message || "Failed to fetch partial payment requests",
+      data: [],
+    };
+  }
+};
+ 
+// ============================================
+// ADMIN: PASTE PAYMENT LINK -> 'Payment Link Sent'
+// ============================================
+export const sendPaymentLinkService = async (
+  ticketId: string,
+  body: { paymentLink: string; depositAmount: number }
+) => {
+  const { paymentLink, depositAmount } = body;
+ 
+  if (!paymentLink || depositAmount === undefined || depositAmount === null) {
+    return {
+      success: false,
+      message: "paymentLink and depositAmount are required",
+    };
+  }
+ 
+  try {
+    const ticket = await ticketModel.findOne({ ticketId });
+    if (!ticket) {
+      return { success: false, message: "Ticket not found" };
+    }
+    if (ticket.selectedPlan !== "partial") {
+      return { success: false, message: "This ticket is not on the partial payment plan" };
+    }
+ 
+    ticket.paymentLink = paymentLink;
+    ticket.depositAmount = depositAmount;
+    ticket.outstandingBalance = ticket.totalAmount - ticket.amountPaid;
+    ticket.partialWorkflowStatus = "Payment Link Sent";
+    await ticket.save();
+ 
+    // TODO: email/WhatsApp the paymentLink to ticket.email / ticket.contactValue.
+    // Reuse the pattern from sendTicketConfirmationEmail — needs a new
+    // template, e.g. sendPartialPaymentLinkEmail({ to, name, paymentLink, depositAmount }).
+ 
+    return {
+      success: true,
+      message: "Payment link recorded and marked as sent",
+      data: ticket,
+    };
+  } catch (error: any) {
+    console.error("Send Payment Link Error:", error);
+    return {
+      success: false,
+      message: error.message || "Failed to send payment link",
+    };
+  }
+};
+ 
+// ============================================
+// ADMIN: MARK DEPOSIT PAID
+// -> 'Balance Outstanding' if a balance remains, otherwise 'Fully Paid'
+// ============================================
+export const markDepositPaidService = async (
+  ticketId: string,
+  body: { pfReference: string; paymentDate?: string; amountReceived: number }
+) => {
+  const { pfReference, paymentDate, amountReceived } = body;
+ 
+  if (!pfReference || amountReceived === undefined || amountReceived === null) {
+    return {
+      success: false,
+      message: "pfReference and amountReceived are required",
+    };
+  }
+ 
+  try {
+    const ticket = await ticketModel.findOne({ ticketId });
+    if (!ticket) {
+      return { success: false, message: "Ticket not found" };
+    }
+    if (ticket.selectedPlan !== "partial") {
+      return { success: false, message: "This ticket is not on the partial payment plan" };
+    }
+ 
+    const newAmountPaid = (ticket.amountPaid || 0) + Number(amountReceived);
+    const outstandingBalance = Math.max(ticket.totalAmount - newAmountPaid, 0);
+    const paidAt = paymentDate ? new Date(paymentDate) : new Date();
+ 
+    ticket.amountPaid = newAmountPaid;
+    ticket.outstandingBalance = outstandingBalance;
+    ticket.pfPaymentId = pfReference;
+    ticket.depositPaidAt = paidAt;
+    ticket.paymentDate = paidAt;
+    ticket.paymentStatus = outstandingBalance <= 0 ? "completed" : "partial";
+    // Deposit is recorded as fully covering the ticket in some cases —
+    // if so, skip straight to Fully Paid instead of Balance Outstanding.
+    ticket.partialWorkflowStatus = outstandingBalance <= 0 ? "Fully Paid" : "Balance Outstanding";
+ 
+    await ticket.save();
+ 
+    return {
+      success: true,
+      message: "Deposit marked as paid",
+      data: ticket,
+    };
+  } catch (error: any) {
+    console.error("Mark Deposit Paid Error:", error);
+    return {
+      success: false,
+      message: error.message || "Failed to mark deposit as paid",
+    };
+  }
+};
+ 
+// ============================================
+// ADMIN: PASTE BALANCE PAYMENT LINK -> 'Balance Link Sent'
+// ============================================
+export const sendBalanceLinkService = async (
+  ticketId: string,
+  body: { balancePaymentLink: string }
+) => {
+  const { balancePaymentLink } = body;
+ 
+  if (!balancePaymentLink) {
+    return { success: false, message: "balancePaymentLink is required" };
+  }
+ 
+  try {
+    const ticket = await ticketModel.findOne({ ticketId });
+    if (!ticket) {
+      return { success: false, message: "Ticket not found" };
+    }
+    if (ticket.partialWorkflowStatus !== "Balance Outstanding") {
+      return {
+        success: false,
+        message: `Cannot send balance link from status '${ticket.partialWorkflowStatus}' — expected 'Balance Outstanding'`,
+      };
+    }
+ 
+    ticket.balancePaymentLink = balancePaymentLink;
+    ticket.partialWorkflowStatus = "Balance Link Sent";
+    await ticket.save();
+ 
+    // TODO: email/WhatsApp the balancePaymentLink to the attendee.
+ 
+    return {
+      success: true,
+      message: "Balance payment link recorded and marked as sent",
+      data: ticket,
+    };
+  } catch (error: any) {
+    console.error("Send Balance Link Error:", error);
+    return {
+      success: false,
+      message: error.message || "Failed to send balance link",
+    };
+  }
+};
+ 
+// ============================================
+// ADMIN: MARK FULLY PAID -> 'Fully Paid' -> auto -> 'Ticket Issued'
+// Unlocks ticket, QR code, and wallet passes.
+// ============================================
+export const markFullyPaidService = async (
+  ticketId: string,
+  body: { pfReference: string; paymentDate?: string; amountReceived: number }
+) => {
+  const { pfReference, paymentDate, amountReceived } = body;
+ 
+  if (!pfReference || amountReceived === undefined || amountReceived === null) {
+    return {
+      success: false,
+      message: "pfReference and amountReceived are required",
+    };
+  }
+ 
+  try {
+    const ticket = await ticketModel.findOne({ ticketId });
+    if (!ticket) {
+      return { success: false, message: "Ticket not found" };
+    }
+ 
+    const newAmountPaid = (ticket.amountPaid || 0) + Number(amountReceived);
+    const paidAt = paymentDate ? new Date(paymentDate) : new Date();
+ 
+    ticket.amountPaid = newAmountPaid;
+    ticket.outstandingBalance = Math.max(ticket.totalAmount - newAmountPaid, 0);
+    ticket.pfPaymentId = pfReference;
+    ticket.balancePaidAt = paidAt;
+    ticket.paymentDate = paidAt;
+    ticket.paymentStatus = "completed";
+    ticket.status = "approved";
+    ticket.partialWorkflowStatus = "Fully Paid";
+    await ticket.save();
+ 
+    // Ticket issuance (QR code / Apple / Google Wallet pass generation)
+    // is a separate concern — this just flips the gate. Wire in actual
+    // pass generation here once that feature exists, then persist
+    // ticketIssuedAt and flip status to 'Ticket Issued'.
+    ticket.partialWorkflowStatus = "Ticket Issued";
+    ticket.ticketIssuedAt = new Date();
+    await ticket.save();
+ 
+    // TODO: send final confirmation email with ticket/QR/wallet pass links.
+ 
+    return {
+      success: true,
+      message: "Ticket fully paid and issued",
+      data: ticket,
+    };
+  } catch (error: any) {
+    console.error("Mark Fully Paid Error:", error);
+    return {
+      success: false,
+      message: error.message || "Failed to mark ticket as fully paid",
+    };
+  }
+};
