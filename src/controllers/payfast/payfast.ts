@@ -42,7 +42,8 @@ export const initiatePayment = async (req: Request, res: Response) => {
 // ============================================
 export const handlePayfastNotification = async (req: Request, res: Response) => {
   try {
-    const response = await handlePayfastNotificationService(req.body, res);
+    const rawBody = typeof req.body === "string" ? req.body : JSON.stringify(req.body);
+    const response = await handlePayfastNotificationService(req.body, rawBody, res);
 
     if (!response.success) {
       return res.status(httpStatusCode.BAD_REQUEST).json(response);

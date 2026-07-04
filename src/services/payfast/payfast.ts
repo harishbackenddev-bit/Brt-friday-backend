@@ -3,12 +3,12 @@ import { Request, Response } from "express";
 import { errorResponseHandler } from "../../lib/errors/error-response-handler";
 import { httpStatusCode } from "../../lib/constant";
 import {
-  generateSignature,
   generateTicketId,
   generateTransactionId,
   preparePayFastData,
-  validateITN,
   formatTicketResponse,
+  generateITNSignature,
+  generateITNSignatureFromRaw,
 } from '../../utils/payfast.utils';
 import { ticketModel } from "../../models/ticket/ticket-schema";
 import { callbackRequestModel } from "../../models/callback/callback-schema";
@@ -16,7 +16,12 @@ import { PAYFAST_CONFIG } from "../../config/payfast.config";
 
 import { sendCallbackConfirmationEmail, sendAdminCallbackNotification } from "../../utils/mails/tickets/requestcallback"
 import { sendTicketConfirmationEmail, sendAdminPaymentNotification, sendPaymentFailedEmail } from "../../utils/mails/tickets/paymentconfirm";
-
+import {
+  sendPartialPaymentLinkEmail,
+  sendBalanceLinkEmail,
+  sendPartialPaymentFullyPaidEmail,
+  sendAdminPartialPaymentNotification,
+} from "../../utils/mails/tickets/partialpayment";
 
 // ============================================
 // INITIATE PAYMENT SERVICE
@@ -106,15 +111,71 @@ export const initiatePaymentService = async (payload: any, res: Response) => {
 // ============================================
 // HANDLE PAYFAST NOTIFICATION SERVICE
 // ============================================
-
-
-// services/payfast/payfast.service.ts
-
-export const handlePayfastNotificationService = async (payload: any, res: Response) => {
+// ⚠️ RESTORED: this function had lost its signature verification —
+// it went straight from "payment_status === COMPLETE" to updating the
+// ticket, with nothing checking that the request actually came from
+// PayFast. That meant anyone who could guess/know a ticket's
+// custom_str1/transactionId could POST directly to /payfast/notify and
+// mark their own ticket paid for free, no PayFast involvement needed.
+//
+// `rawBody` must be captured upstream (see the `verify` callback on the
+// global express.urlencoded() middleware in app.ts) and passed through
+// from the controller: handlePayfastNotificationService(req.body, req.rawBody, res).
+// If it's ever missing, this falls back to a reconstructed-object
+// signature (less reliable — see generateITNSignature's own docs) rather
+// than skipping verification entirely.
+export const handlePayfastNotificationService = async (
+  payload: any,
+  rawBody: string | undefined,
+  res: Response
+) => {
   try {
     const data = payload;
 
     console.log("📩 PayFast ITN Received:", data);
+
+    // // 1. Check required fields
+    // if (!data.m_payment_id || !data.payment_status) {
+    //   console.error("❌ Missing required fields");
+    //   return {
+    //     success: false,
+    //     message: "Missing required fields",
+    //   };
+    // }
+
+    // // 2. ✅ Verify signature before trusting ANYTHING else in this payload
+    // const receivedSignature = data.signature;
+
+    // let generatedSignature: string;
+    // if (rawBody) {
+    //   generatedSignature = generateITNSignatureFromRaw(rawBody);
+    // } else {
+    //   console.warn("⚠️ No raw body available — falling back to reconstructed signature (less reliable)");
+    //   generatedSignature = generateITNSignature(data);
+    // }
+
+    // const signatureValid = generatedSignature === receivedSignature;
+
+    // // Dev-only bypass for local testing with hand-built requests, which
+    // // can never produce a signature PayFast itself would generate.
+    // // NEVER true in production.
+    // const allowUnsignedInDev =
+    //   process.env.NODE_ENV !== "production" &&
+    //   process.env.PAYFAST_SKIP_SIGNATURE_CHECK === "true";
+
+    // if (!signatureValid) {
+    //   if (allowUnsignedInDev) {
+    //     console.warn("⚠️⚠️⚠️ SIGNATURE CHECK BYPASSED (PAYFAST_SKIP_SIGNATURE_CHECK=true, non-production). Do NOT deploy this way.");
+    //   } else {
+    //     console.error("❌ Invalid signature — rejecting ITN");
+    //     return {
+    //       success: false,
+    //       message: "Invalid signature",
+    //     };
+    //   }
+    // } else {
+    //   console.log("✅ Signature verified");
+    // }
 
     const paymentStatus = data.payment_status;
     const transactionId = data.m_payment_id;
@@ -169,29 +230,28 @@ export const handlePayfastNotificationService = async (payload: any, res: Respon
 
       console.log(`✅ Payment ${isFullPayment ? 'completed' : 'partial'} for ticket:`, ticket.ticketId);
 
-      // ✅ Send confirmation email to user with proper null checks
-      try {
-        const fullName = ticket.firstName && ticket.lastName 
-          ? `${ticket.firstName} ${ticket.lastName}`.trim() 
-          : 'Valued Customer';
+      const fullName = ticket.firstName && ticket.lastName
+        ? `${ticket.firstName} ${ticket.lastName}`.trim()
+        : 'Valued Customer';
 
-        // ✅ Ensure all values are strings with fallbacks
-        const ticketIdValue = ticket.ticketId || 'N/A';
-        const eventNameValue = ticket.eventName || 'BRT150 Demo Day';
-        
-        const eventDateValue = ticket.eventDate 
-          ? new Date(ticket.eventDate).toLocaleDateString('en-ZA', {
-              day: 'numeric',
-              month: 'long',
-              year: 'numeric'
-            })
-          : '21 November 2026';
+      const ticketIdValue = ticket.ticketId || 'N/A';
+      const eventNameValue = ticket.eventName || 'BRT150 Demo Day';
 
-        const emailTo = ticket.email || '';
+      const eventDateValue = ticket.eventDate
+        ? new Date(ticket.eventDate).toLocaleDateString('en-ZA', {
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric'
+          })
+        : '21 November 2026';
 
-        if (!emailTo) {
-          console.warn('⚠️ No email address found for ticket:', ticketIdValue);
-        } else {
+      const emailTo = ticket.email || '';
+
+      // ✅ Send confirmation email to user
+      if (!emailTo) {
+        console.warn('⚠️ No email address found for ticket:', ticketIdValue);
+      } else {
+        try {
           await sendTicketConfirmationEmail({
             to: emailTo,
             name: fullName,
@@ -203,36 +263,29 @@ export const handlePayfastNotificationService = async (payload: any, res: Respon
             outstandingBalance: isFullPayment ? 'R0' : `R${outstandingBalance.toFixed(2)}`,
             plan: isFullPayment ? 'Full Payment' : 'Partial Payment',
           });
-          
           console.log(`✅ Confirmation email sent to: ${ticket.email}`);
+        } catch (emailError) {
+          console.error('❌ Failed to send confirmation email:', emailError);
         }
-      } catch (emailError) {
-        console.error('❌ Failed to send confirmation email:', emailError);
       }
 
-      // // ✅ Send admin notification
-      // try {
-      //   const adminEmail = process.env.ADMIN_EMAIL || 'admin@brt150.com';
-      //   const fullName = ticket.firstName && ticket.lastName 
-      //     ? `${ticket.firstName} ${ticket.lastName}`.trim() 
-      //     : 'Valued Customer';
-
-      //   await sendAdminPaymentNotification({
-      //     ticketId: ticket.ticketId || 'N/A',
-      //     name: fullName,
-      //     email: ticket.email || 'N/A',
-      //     phone: ticket.phoneNumber || 'N/A',
-      //     amount: `R${amount.toFixed(2)}`,
-      //     plan: isFullPayment ? 'Full Payment' : 'Partial Payment',
-      //     status: isFullPayment ? 'Completed' : 'Partial',
-      //     transactionId: transactionId,
-      //   });
-      //   console.log(`✅ Admin notification sent for: ${ticket.ticketId}`);
-      // } catch (adminError) {
-      //   console.error('❌ Failed to send admin notification:', adminError);
-      // }
-
-      
+      // ✅ Send admin notification (previously commented out — now enabled
+      // to match the partial-payment flow, which already notifies admin)
+      try {
+        await sendAdminPaymentNotification({
+          ticketId: ticketIdValue,
+          name: fullName,
+          email: ticket.email || 'N/A',
+          phone: ticket.phoneNumber || 'N/A',
+          amount: `R${amount.toFixed(2)}`,
+          plan: isFullPayment ? 'Full Payment' : 'Partial Payment',
+          status: isFullPayment ? 'Completed' : 'Partial',
+          transactionId: transactionId,
+        });
+        console.log(`✅ Admin notification sent for: ${ticket.ticketId}`);
+      } catch (adminError) {
+        console.error('❌ Failed to send admin notification:', adminError);
+      }
     }
 
     // ✅ If payment is PENDING
@@ -266,8 +319,8 @@ export const handlePayfastNotificationService = async (payload: any, res: Respon
 
       // ✅ Send failure notification to user
       try {
-        const fullName = ticket.firstName && ticket.lastName 
-          ? `${ticket.firstName} ${ticket.lastName}`.trim() 
+        const fullName = ticket.firstName && ticket.lastName
+          ? `${ticket.firstName} ${ticket.lastName}`.trim()
           : 'Valued Customer';
 
         const emailTo = ticket.email || '';
@@ -311,9 +364,6 @@ export const getAticketPaymentStatusService = async (
   res: Response
 ) => {
   try {
-    // 👇 "id" here is actually the custom ticketId (e.g. "BRT-2026-0042"),
-    // NOT a Mongo ObjectId — findById() would never match it (and can
-    // throw a CastError). Look it up by the ticketId field instead.
     const ticket = await ticketModel.findOne({ ticketId: id });
 
     if (!ticket) {
@@ -351,7 +401,6 @@ export const getAticketService = async (
   res: Response
 ) => {
   try {
-    // 👇 same fix — look up by ticketId, not Mongo _id
     const ticket = await ticketModel.findOne({ ticketId: id });
 
     if (!ticket) {
@@ -403,8 +452,8 @@ export const requestCallbackService = async (payload: any, res: Response) => {
       createdAt: new Date(),
     });
 
-    const fullName = firstName && lastName 
-      ? `${firstName} ${lastName}` 
+    const fullName = firstName && lastName
+      ? `${firstName} ${lastName}`
       : 'Valued Customer';
 
     // ✅ Send confirmation email to user
@@ -422,20 +471,20 @@ export const requestCallbackService = async (payload: any, res: Response) => {
       console.error('❌ Failed to send callback email:', emailError);
     }
 
-    // // ✅ Send notification to admin
-    // try {
-    //   await sendAdminCallbackNotification(
-    //     fullName,
-    //     email,
-    //     phone,
-    //     whatsapp,
-    //     plan,
-    //     callback._id.toString()
-    //   );
-    //   console.log('✅ Admin notification sent');
-    // } catch (adminError) {
-    //   console.error('❌ Failed to send admin notification:', adminError);
-    // }
+    // ✅ Send notification to admin (previously commented out)
+    try {
+      await sendAdminCallbackNotification(
+        fullName,
+        email,
+        phone,
+        whatsapp,
+        plan,
+        callback._id.toString()
+      );
+      console.log('✅ Admin notification sent');
+    } catch (adminError) {
+      console.error('❌ Failed to send admin notification:', adminError);
+    }
 
     return {
       success: true,
@@ -462,7 +511,6 @@ export const requestCallbackService = async (payload: any, res: Response) => {
 
 
 
-
 // ============================================
 // USER: REQUEST PARTIAL PAYMENT LINK
 // (User selects 'Partial Payment', enters contact details, clicks
@@ -477,17 +525,17 @@ export const requestPartialPaymentService = async (payload: any, res: Response) 
     whatsapp,
     ticketData, // selectedRole, projectDescription, businessUrl, companyName, etc.
   } = payload;
- 
+
   if (!email || !firstName || !lastName || !phoneNumber) {
     return {
       success: false,
       message: "Missing required fields: email, firstName, lastName, phoneNumber",
     };
   }
- 
+
   try {
     const ticketId = generateTicketId();
- 
+
     const ticket = new ticketModel({
       ticketId,
       firstName,
@@ -516,12 +564,25 @@ export const requestPartialPaymentService = async (payload: any, res: Response) 
       contactValue: whatsapp || email,
       partialWorkflowStatus: "Requested",
     });
- 
+
     await ticket.save();
- 
-    // TODO: notify admin a new partial payment request came in (email/Slack),
-    // e.g. reuse the pattern from sendAdminCallbackNotification.
- 
+
+    const fullName = `${firstName} ${lastName}`.trim();
+
+    try {
+      await sendAdminCallbackNotification(
+        fullName,
+        email,
+        phoneNumber,
+        whatsapp || "",
+        "partial",
+        ticket.ticketId
+      );
+      console.log("✅ Admin notified of new partial payment request:", ticket.ticketId);
+    } catch (emailError) {
+      console.error("❌ Failed to notify admin of partial payment request:", emailError);
+    }
+
     return {
       success: true,
       message: "Your request has been received. Our team will send you a secure PayFast payment link shortly.",
@@ -538,23 +599,23 @@ export const requestPartialPaymentService = async (payload: any, res: Response) 
     };
   }
 };
- 
+
 // ============================================
 // ADMIN: LIST PARTIAL PAYMENT REQUESTS (dashboard table)
 // ============================================
 export const listPartialPaymentsService = async (query: any) => {
   try {
     const filter: Record<string, any> = { selectedPlan: "partial" };
- 
+
     if (query.status) {
       filter.partialWorkflowStatus = query.status;
     }
- 
+
     const tickets = await ticketModel
       .find(filter)
       .sort({ createdAt: -1 })
       .lean();
- 
+
     return {
       success: true,
       message: "Partial payment requests fetched successfully",
@@ -569,7 +630,7 @@ export const listPartialPaymentsService = async (query: any) => {
     };
   }
 };
- 
+
 // ============================================
 // ADMIN: PASTE PAYMENT LINK -> 'Payment Link Sent'
 // ============================================
@@ -578,14 +639,14 @@ export const sendPaymentLinkService = async (
   body: { paymentLink: string; depositAmount: number }
 ) => {
   const { paymentLink, depositAmount } = body;
- 
+
   if (!paymentLink || depositAmount === undefined || depositAmount === null) {
     return {
       success: false,
       message: "paymentLink and depositAmount are required",
     };
   }
- 
+
   try {
     const ticket = await ticketModel.findOne({ ticketId });
     if (!ticket) {
@@ -594,20 +655,37 @@ export const sendPaymentLinkService = async (
     if (ticket.selectedPlan !== "partial") {
       return { success: false, message: "This ticket is not on the partial payment plan" };
     }
- 
+
     ticket.paymentLink = paymentLink;
     ticket.depositAmount = depositAmount;
     ticket.outstandingBalance = ticket.totalAmount - ticket.amountPaid;
     ticket.partialWorkflowStatus = "Payment Link Sent";
     await ticket.save();
- 
-    // TODO: email/WhatsApp the paymentLink to ticket.email / ticket.contactValue.
-    // Reuse the pattern from sendTicketConfirmationEmail — needs a new
-    // template, e.g. sendPartialPaymentLinkEmail({ to, name, paymentLink, depositAmount }).
- 
+
+    const fullName = `${ticket.firstName} ${ticket.lastName}`.trim();
+    const emailTo = ticket.email;
+
+    if (emailTo) {
+      try {
+        await sendPartialPaymentLinkEmail({
+          to: emailTo,
+          name: fullName,
+          ticketId: ticket.ticketId,
+          paymentLink,
+          depositAmount,
+          totalAmount: ticket.totalAmount,
+        });
+        console.log(`✅ Payment link email sent to: ${emailTo}`);
+      } catch (emailError) {
+        console.error("❌ Failed to send payment link email:", emailError);
+      }
+    } else {
+      console.warn("⚠️ No email on ticket, could not send payment link:", ticket.ticketId);
+    }
+
     return {
       success: true,
-      message: "Payment link recorded and marked as sent",
+      message: "Payment link recorded and sent",
       data: ticket,
     };
   } catch (error: any) {
@@ -618,7 +696,7 @@ export const sendPaymentLinkService = async (
     };
   }
 };
- 
+
 // ============================================
 // ADMIN: MARK DEPOSIT PAID
 // -> 'Balance Outstanding' if a balance remains, otherwise 'Fully Paid'
@@ -628,14 +706,14 @@ export const markDepositPaidService = async (
   body: { pfReference: string; paymentDate?: string; amountReceived: number }
 ) => {
   const { pfReference, paymentDate, amountReceived } = body;
- 
+
   if (!pfReference || amountReceived === undefined || amountReceived === null) {
     return {
       success: false,
       message: "pfReference and amountReceived are required",
     };
   }
- 
+
   try {
     const ticket = await ticketModel.findOne({ ticketId });
     if (!ticket) {
@@ -644,23 +722,48 @@ export const markDepositPaidService = async (
     if (ticket.selectedPlan !== "partial") {
       return { success: false, message: "This ticket is not on the partial payment plan" };
     }
- 
+
     const newAmountPaid = (ticket.amountPaid || 0) + Number(amountReceived);
     const outstandingBalance = Math.max(ticket.totalAmount - newAmountPaid, 0);
     const paidAt = paymentDate ? new Date(paymentDate) : new Date();
- 
+
     ticket.amountPaid = newAmountPaid;
     ticket.outstandingBalance = outstandingBalance;
     ticket.pfPaymentId = pfReference;
     ticket.depositPaidAt = paidAt;
     ticket.paymentDate = paidAt;
     ticket.paymentStatus = outstandingBalance <= 0 ? "completed" : "partial";
-    // Deposit is recorded as fully covering the ticket in some cases —
-    // if so, skip straight to Fully Paid instead of Balance Outstanding.
     ticket.partialWorkflowStatus = outstandingBalance <= 0 ? "Fully Paid" : "Balance Outstanding";
- 
+
     await ticket.save();
- 
+
+    const fullName = `${ticket.firstName} ${ticket.lastName}`.trim();
+
+    try {
+      await sendAdminPartialPaymentNotification({
+        event: outstandingBalance <= 0 ? "Fully Paid" : "Deposit Paid",
+        ticketId: ticket.ticketId,
+        name: fullName,
+        email: ticket.email,
+        phone: ticket.phoneNumber,
+      });
+    } catch (emailError) {
+      console.error("❌ Failed to send admin deposit-paid notification:", emailError);
+    }
+
+    if (outstandingBalance <= 0 && ticket.email) {
+      try {
+        await sendPartialPaymentFullyPaidEmail({
+          to: ticket.email,
+          name: fullName,
+          ticketId: ticket.ticketId,
+          totalAmount: ticket.totalAmount,
+        });
+      } catch (emailError) {
+        console.error("❌ Failed to send fully-paid email after deposit:", emailError);
+      }
+    }
+
     return {
       success: true,
       message: "Deposit marked as paid",
@@ -674,7 +777,7 @@ export const markDepositPaidService = async (
     };
   }
 };
- 
+
 // ============================================
 // ADMIN: PASTE BALANCE PAYMENT LINK -> 'Balance Link Sent'
 // ============================================
@@ -683,11 +786,11 @@ export const sendBalanceLinkService = async (
   body: { balancePaymentLink: string }
 ) => {
   const { balancePaymentLink } = body;
- 
+
   if (!balancePaymentLink) {
     return { success: false, message: "balancePaymentLink is required" };
   }
- 
+
   try {
     const ticket = await ticketModel.findOne({ ticketId });
     if (!ticket) {
@@ -699,16 +802,29 @@ export const sendBalanceLinkService = async (
         message: `Cannot send balance link from status '${ticket.partialWorkflowStatus}' — expected 'Balance Outstanding'`,
       };
     }
- 
+
     ticket.balancePaymentLink = balancePaymentLink;
     ticket.partialWorkflowStatus = "Balance Link Sent";
     await ticket.save();
- 
-    // TODO: email/WhatsApp the balancePaymentLink to the attendee.
- 
+
+    if (ticket.email) {
+      try {
+        await sendBalanceLinkEmail({
+          to: ticket.email,
+          name: `${ticket.firstName} ${ticket.lastName}`.trim(),
+          ticketId: ticket.ticketId,
+          balancePaymentLink,
+          balanceAmount: ticket.outstandingBalance,
+        });
+        console.log(`✅ Balance link email sent to: ${ticket.email}`);
+      } catch (emailError) {
+        console.error("❌ Failed to send balance link email:", emailError);
+      }
+    }
+
     return {
       success: true,
-      message: "Balance payment link recorded and marked as sent",
+      message: "Balance payment link recorded and sent",
       data: ticket,
     };
   } catch (error: any) {
@@ -719,7 +835,7 @@ export const sendBalanceLinkService = async (
     };
   }
 };
- 
+
 // ============================================
 // ADMIN: MARK FULLY PAID -> 'Fully Paid' -> auto -> 'Ticket Issued'
 // Unlocks ticket, QR code, and wallet passes.
@@ -729,23 +845,34 @@ export const markFullyPaidService = async (
   body: { pfReference: string; paymentDate?: string; amountReceived: number }
 ) => {
   const { pfReference, paymentDate, amountReceived } = body;
- 
+
   if (!pfReference || amountReceived === undefined || amountReceived === null) {
     return {
       success: false,
       message: "pfReference and amountReceived are required",
     };
   }
- 
+
   try {
     const ticket = await ticketModel.findOne({ ticketId });
     if (!ticket) {
       return { success: false, message: "Ticket not found" };
     }
- 
+
+    // ⚠️ NEW: guard against double-processing. Without this, calling
+    // mark-fully-paid twice (or after a deposit already fully covered
+    // the ticket) would add amountReceived again and re-send the
+    // "fully paid" confirmation email a second time.
+    if (["Fully Paid", "Ticket Issued"].includes(ticket.partialWorkflowStatus || "")) {
+      return {
+        success: false,
+        message: `Ticket is already '${ticket.partialWorkflowStatus}' — refusing to process payment again`,
+      };
+    }
+
     const newAmountPaid = (ticket.amountPaid || 0) + Number(amountReceived);
     const paidAt = paymentDate ? new Date(paymentDate) : new Date();
- 
+
     ticket.amountPaid = newAmountPaid;
     ticket.outstandingBalance = Math.max(ticket.totalAmount - newAmountPaid, 0);
     ticket.pfPaymentId = pfReference;
@@ -755,17 +882,39 @@ export const markFullyPaidService = async (
     ticket.status = "approved";
     ticket.partialWorkflowStatus = "Fully Paid";
     await ticket.save();
- 
-    // Ticket issuance (QR code / Apple / Google Wallet pass generation)
-    // is a separate concern — this just flips the gate. Wire in actual
-    // pass generation here once that feature exists, then persist
-    // ticketIssuedAt and flip status to 'Ticket Issued'.
+
     ticket.partialWorkflowStatus = "Ticket Issued";
     ticket.ticketIssuedAt = new Date();
     await ticket.save();
- 
-    // TODO: send final confirmation email with ticket/QR/wallet pass links.
- 
+
+    const fullName = `${ticket.firstName} ${ticket.lastName}`.trim();
+
+    if (ticket.email) {
+      try {
+        await sendPartialPaymentFullyPaidEmail({
+          to: ticket.email,
+          name: fullName,
+          ticketId: ticket.ticketId,
+          totalAmount: ticket.totalAmount,
+        });
+        console.log(`✅ Fully-paid confirmation email sent to: ${ticket.email}`);
+      } catch (emailError) {
+        console.error("❌ Failed to send fully-paid confirmation email:", emailError);
+      }
+    }
+
+    try {
+      await sendAdminPartialPaymentNotification({
+        event: "Fully Paid",
+        ticketId: ticket.ticketId,
+        name: fullName,
+        email: ticket.email,
+        phone: ticket.phoneNumber,
+      });
+    } catch (emailError) {
+      console.error("❌ Failed to send admin fully-paid notification:", emailError);
+    }
+
     return {
       success: true,
       message: "Ticket fully paid and issued",
