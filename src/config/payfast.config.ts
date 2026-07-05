@@ -15,7 +15,7 @@ export const PAYFAST_CONFIG: PayFastConfig = {
   mode: (process.env.PAYFAST_MODE as 'test' | 'live') || 'test',
   merchantId: process.env.PAYFAST_MERCHANT_ID || '10050879',
   merchantKey: process.env.PAYFAST_MERCHANT_KEY || 'y4jdud635c88g',
-  passphrase: process.env.PAYFAST_PASSPHRASE || '',
+  passphrase: process.env.PAYFAST_PASSPHRASE || 'VelvetStorm28-CedarOrbit',
   
   get paymentUrl(): string {
     return this.mode === 'live'

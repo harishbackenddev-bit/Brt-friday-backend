@@ -43,24 +43,21 @@ const pfEncode = (value: string): string => {
  *
  * @param data - The payment / ITN data to sign
  * @param fieldOrder - Optional explicit field order (checkout only)
- * @param isITN - If true, preserves as-received field order and includes
- *                empty values (matches how PayFast itself signs ITN posts).
- *                If false (checkout), empty fields are stripped and the
- *                explicit fieldOrder is used.
+ * @param isITN - If true, includes empty values and preserves field order
  */
 export const generateSignature = (
   data: Record<string, any>,
   fieldOrder?: string[],
   isITN: boolean = false
 ): string => {
-  // Determine which keys are valid for signing
+  // Get valid keys based on isITN flag
   let validKeys: string[];
 
   if (isITN) {
-    // ✅ For ITN: include ALL fields (even empty ones) - PayFast includes them
+    // For ITN: include ALL fields (even empty ones)
     validKeys = Object.keys(data).filter(key => key !== 'signature');
   } else {
-    // ✅ For checkout: filter out empty values
+    // For checkout: filter out empty values
     validKeys = Object.keys(data).filter(
       key =>
         key !== 'signature' &&
@@ -73,12 +70,10 @@ export const generateSignature = (
   // Determine key ORDER
   let orderedKeys: string[];
   if (isITN) {
-    // ✅ ITN uses the field order AS RECEIVED from PayFast — NOT alphabetical.
-    // This relies on Object.keys(data) preserving insertion/POST order,
-    // which holds for plain JS objects with string keys.
+    // ITN uses as-received order (preserve the order from PayFast)
     orderedKeys = validKeys;
   } else if (fieldOrder) {
-    // ✅ Checkout uses the specific PayFast field order
+    // Checkout uses specific field order
     orderedKeys = [
       ...fieldOrder.filter(key => validKeys.includes(key)),
       ...validKeys.filter(key => !fieldOrder.includes(key)),
@@ -87,10 +82,10 @@ export const generateSignature = (
     orderedKeys = validKeys;
   }
 
+  // Build the query string
   let pfOutput = '';
   for (const key of orderedKeys) {
     const value = data[key];
-    // Include empty values as empty string (matters for ITN)
     const stringValue = value !== undefined && value !== null ? String(value).trim() : '';
 
     if (pfOutput !== '') {
@@ -110,9 +105,6 @@ export const generateSignature = (
 
 /**
  * Generate signature for ITN validation (as-received field order + '+' encoding)
- * from an already-parsed object. Prefer generateITNSignatureFromRaw when the
- * raw POST body is available — it removes any risk of order/encoding drift
- * introduced by parsing and reconstructing the object.
  */
 export const generateITNSignature = (data: Record<string, any>): string => {
   return generateSignature(data, undefined, true);
@@ -124,9 +116,6 @@ export const generateITNSignature = (data: Record<string, any>): string => {
  * PayFast sent it. This is the most reliable method: it just strips the
  * `signature` field out of the raw string and hashes what's left, with
  * no decode/re-encode round-trip that could introduce a mismatch.
- *
- * Requires the raw body to have been captured, e.g. via:
- *   express.urlencoded({ verify: (req, res, buf) => { req.rawBody = buf.toString('utf8'); } })
  */
 export const generateITNSignatureFromRaw = (rawBody: string): string => {
   const pairs = rawBody
@@ -136,8 +125,6 @@ export const generateITNSignatureFromRaw = (rawBody: string): string => {
   let pfOutput = pairs.join('&');
 
   if (PAYFAST_CONFIG.passphrase) {
-    // Raw body is already urlencoded with '+' for spaces (standard
-    // application/x-www-form-urlencoded), matching pfEncode's behaviour.
     pfOutput += `&passphrase=${pfEncode(PAYFAST_CONFIG.passphrase)}`;
   }
 
@@ -206,8 +193,6 @@ export const calculatePaymentAmounts = (plan: 'full' | 'partial') => {
 // PAYFAST PAYMENT DATA PREPARATION
 // ============================================
 
-// utils/payfast.utils.ts
-
 export const preparePayFastData = (params: {
   amount: number;
   email: string;
@@ -269,8 +254,12 @@ export const preparePayFastData = (params: {
     payment_method: payfastPaymentMethod,
   };
 
+  // Generate signature
   const signature = generateCheckoutSignature(data);
   data.signature = signature;
+
+  console.log(`🔐 Generated Signature: ${signature}`);
+  console.log(`🔐 Passphrase used: ${PAYFAST_CONFIG.passphrase ? 'Yes' : 'No'}`);
 
   return data;
 };
