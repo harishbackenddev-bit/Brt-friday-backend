@@ -206,6 +206,8 @@ export const calculatePaymentAmounts = (plan: 'full' | 'partial') => {
 // PAYFAST PAYMENT DATA PREPARATION
 // ============================================
 
+// utils/payfast.utils.ts
+
 export const preparePayFastData = (params: {
   amount: number;
   email: string;
@@ -214,12 +216,35 @@ export const preparePayFastData = (params: {
   plan: 'full' | 'partial';
   ticketId: string;
   transactionId: string;
+  paymentMethod?: string;
 }) => {
-  const { amount, email, firstName, lastName, plan, ticketId, transactionId } = params;
+  const { amount, email, firstName, lastName, plan, ticketId, transactionId, paymentMethod } = params;
 
   const returnUrlWithRef = `${PAYFAST_CONFIG.returnUrl}${
     PAYFAST_CONFIG.returnUrl.includes('?') ? '&' : '?'
   }ticketId=${encodeURIComponent(ticketId)}`;
+
+  /**
+   * PayFast Payment Method Codes:
+   * cc  - Credit Card
+   * dc  - Debit Card
+   * ap  - Apple Pay
+   * gp  - Google Pay
+   * sp  - Samsung Pay
+   * ef  - EFT
+   * cp  - Capitec Pay
+   * ab  - Absa Pay
+   */
+  const paymentMethodMap: Record<string, string> = {
+    card: 'cc',
+    apple: 'ap',
+    google: 'gp',
+    bank: 'ef',
+  };
+
+  const payfastPaymentMethod = paymentMethodMap[paymentMethod || 'card'] || 'cc';
+
+  console.log(`📱 Payment Method: ${paymentMethod} -> PayFast Code: ${payfastPaymentMethod}`);
 
   const data: Record<string, string> = {
     merchant_id: PAYFAST_CONFIG.merchantId,
@@ -241,10 +266,9 @@ export const preparePayFastData = (params: {
     custom_str5: 'v1',
     email_confirmation: '1',
     confirmation_address: email,
-    payment_method: 'cc',
+    payment_method: payfastPaymentMethod,
   };
 
-  // ✅ Use checkout signature (specific field order + '+' encoding)
   const signature = generateCheckoutSignature(data);
   data.signature = signature;
 

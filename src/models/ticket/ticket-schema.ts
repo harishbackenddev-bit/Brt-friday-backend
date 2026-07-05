@@ -75,12 +75,19 @@ const ticketSchema = new Schema(
       required: true,
     },
 
+    // ✅ Added Apple Pay and Google Pay to enum
     paymentMethod: {
       type: String,
-      // ✅ Added 'payfast_manual' for staff-generated PayFast payment
-      // links used in the partial-payment workflow (as opposed to
-      // 'payfast', which is the automated checkout redirect flow)
-      enum: ["payfast", "payfast_manual", "card", "bank", "mobile"],
+      enum: [
+        "payfast",
+        "payfast_manual",
+        "card",
+        "bank",
+        "mobile",
+        "Apple Pay",      // ✅ Added
+        "Google Pay",     // ✅ Added
+        "Credit Card",    // ✅ Added for clarity
+      ],
       required: true,
     },
 
@@ -111,9 +118,6 @@ const ticketSchema = new Schema(
       default: null,
     },
 
-    // For manual partial payments this doubles as the "PayFast
-    // Reference" field from the workflow doc (whichever payment —
-    // deposit or balance — was most recently confirmed).
     pfPaymentId: {
       type: String,
       default: null,
@@ -162,8 +166,6 @@ const ticketSchema = new Schema(
 
     // ============================================
     // MANUAL PARTIAL PAYMENT WORKFLOW
-    // (see: BRT150 Manual Partial Payment Workflow spec)
-    // Only meaningful when selectedPlan === "partial".
     // ============================================
     partialWorkflowStatus: {
       type: String,
@@ -177,22 +179,19 @@ const ticketSchema = new Schema(
         "Fully Paid",
         "Ticket Issued",
       ],
-      default: null, // null for full-payment tickets, which don't use this state machine
+      default: null,
     },
 
-    // Deposit amount agreed for this attendee (may differ from a flat 50%)
     depositAmount: {
       type: Number,
       default: null,
     },
 
-    // Manually pasted PayFast link for the deposit payment
     paymentLink: {
       type: String,
       default: null,
     },
 
-    // Manually pasted PayFast link for the remaining balance
     balancePaymentLink: {
       type: String,
       default: null,
@@ -243,13 +242,13 @@ const ticketSchema = new Schema(
       default: null,
     },
 
-    // Guest User (store guest info directly)
+    // Guest User
     isGuest: {
       type: Boolean,
       default: true,
     },
 
-    // Metadata for extra fields
+    // Metadata
     metadata: {
       type: Map,
       of: Schema.Types.Mixed,

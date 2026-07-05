@@ -26,6 +26,8 @@ import {
 // ============================================
 // INITIATE PAYMENT SERVICE
 // ============================================
+// services/payfast/payfast.service.ts
+
 export const initiatePaymentService = async (payload: any, res: Response) => {
   const {
     amount,
@@ -34,7 +36,8 @@ export const initiatePaymentService = async (payload: any, res: Response) => {
     lastName,
     plan,
     phoneNumber,
-    ticketData
+    ticketData,
+    paymentMethod // ✅ This will be 'card', 'apple', or 'google'
   } = payload;
 
   if (!amount || !email || !firstName || !lastName || !plan) {
@@ -49,6 +52,31 @@ export const initiatePaymentService = async (payload: any, res: Response) => {
     const transactionId = generateTransactionId();
     const ticketId = generateTicketId();
 
+    // ✅ Map payment method for display in database
+    const paymentMethodDisplay: Record<string, string> = {
+      card: 'Credit Card',
+      apple: 'Apple Pay',
+      google: 'Google Pay',
+      bank: 'Bank Transfer',
+    };
+
+    // ✅ Map payment method to PayFast code
+    const payfastMethodMap: Record<string, string> = {
+      card: 'cc',
+      apple: 'ap',
+      google: 'gp',
+      bank: 'ef',
+    };
+
+    // ✅ Get display name with fallback
+    const displayName = paymentMethodDisplay[paymentMethod] || 'Credit Card';
+    
+    // ✅ Get PayFast code with fallback
+    const payfastCode = payfastMethodMap[paymentMethod] || 'cc';
+
+    console.log(`📱 Payment Method: ${paymentMethod} -> Display: ${displayName}, PayFast: ${payfastCode}`);
+
+    // ✅ Create ticket with the display name
     const ticket = new ticketModel({
       ticketId: ticketId,
       firstName: firstName,
@@ -63,13 +91,16 @@ export const initiatePaymentService = async (payload: any, res: Response) => {
       linkedInUrl: ticketData?.linkedInUrl || '',
       investmentFocus: ticketData?.investmentFocus || '',
       selectedPlan: plan,
-      paymentMethod: 'payfast',
+      paymentMethod: displayName, // ✅ 'Credit Card', 'Apple Pay', or 'Google Pay'
       paymentStatus: 'pending',
-      amountPaid: amount,
+      amountPaid: 0,
       totalAmount: 2000,
-      outstandingBalance: plan === 'full' ? 0 : (2000 - amount),
+      outstandingBalance: plan === 'full' ? 0 : 2000,
       transactionId: transactionId,
-      paymentDate: new Date(),
+      pfPaymentId: null,
+      paymentDate: null,
+      cardLastFour: null,
+      cardType: null,
       status: 'pending',
       eventName: 'BRT150 Demo Day',
       eventDate: new Date('2026-11-21'),
@@ -79,7 +110,9 @@ export const initiatePaymentService = async (payload: any, res: Response) => {
     });
 
     await ticket.save();
+    console.log(`✅ Ticket created: ${ticketId} with payment method: ${displayName}`);
 
+    // ✅ Prepare PayFast data with payment method code
     const paymentData = preparePayFastData({
       amount,
       email,
@@ -88,7 +121,10 @@ export const initiatePaymentService = async (payload: any, res: Response) => {
       plan,
       ticketId,
       transactionId,
+      paymentMethod: payfastCode, // ✅ 'cc', 'ap', or 'gp'
     });
+
+    console.log(`📤 PayFast payment method: ${payfastCode}`);
 
     return {
       success: true,
@@ -100,13 +136,14 @@ export const initiatePaymentService = async (payload: any, res: Response) => {
     };
 
   } catch (error: any) {
-    console.error('Initiate Payment Error:', error);
+    console.error('❌ Initiate Payment Error:', error);
     return {
       success: false,
       message: error.message || 'Payment initiation failed',
     };
   }
 };
+
 
 // ============================================
 // HANDLE PAYFAST NOTIFICATION SERVICE

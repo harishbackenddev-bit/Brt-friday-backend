@@ -12,12 +12,10 @@ export interface PayFastConfig {
 }
 
 export const PAYFAST_CONFIG: PayFastConfig = {
-  mode: 'test',
-  merchantId: '10050879',
-  merchantKey: 'y4jdud635c88g',
-  // ⚠️ IMPORTANT: If you don't have a passphrase set in PayFast dashboard, 
-  // keep it empty. If you do have one, set it here.
-  passphrase: '',
+  mode: (process.env.PAYFAST_MODE as 'test' | 'live') || 'test',
+  merchantId: process.env.PAYFAST_MERCHANT_ID || '10050879',
+  merchantKey: process.env.PAYFAST_MERCHANT_KEY || 'y4jdud635c88g',
+  passphrase: process.env.PAYFAST_PASSPHRASE || '',
   
   get paymentUrl(): string {
     return this.mode === 'live'
@@ -31,11 +29,7 @@ export const PAYFAST_CONFIG: PayFastConfig = {
       : 'https://sandbox.payfast.co.za/eng/query/validate';
   },
   
-  // ✅ FIXED: Use environment variables with fallbacks
   returnUrl: process.env.PAYFAST_RETURN_URL || 'http://localhost:5173/ticket-success',
   cancelUrl: process.env.PAYFAST_CANCEL_URL || 'http://localhost:5173/payment-cancelled',
-  
-  // ✅ FIXED: For local development, use ngrok URL
-  // Set this in .env: PAYFAST_NOTIFY_URL=https://your-ngrok-url.ngrok.io/api/payfast/notify
   notifyUrl: process.env.PAYFAST_NOTIFY_URL || 'https://brt-friday-backend.onrender.com/api/payfast/notify',
 };
