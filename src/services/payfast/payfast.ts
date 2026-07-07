@@ -611,7 +611,7 @@ export const requestPartialPaymentService = async (payload: any, res: Response) 
       await sendCallbackConfirmationEmail(
         email,
         fullName,
-        callback._id.toString(),
+        ticket._id.toString(),
         phone,
         whatsapp,
         plan
