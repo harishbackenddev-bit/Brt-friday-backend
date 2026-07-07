@@ -6,16 +6,18 @@ configDotenv();
 console.log('SMTP_USER:', process.env.SMTP_USER);
 console.log('SMTP_PASSWORD:', process.env.SMTP_PASSWORD ? '***SET***' : 'NOT SET');
 console.log('SMTP_HOST:', process.env.SMTP_HOST);
-// Create transporter
+
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT || '587'),
-  secure: process.env.SMTP_SECURE === 'true', // true for 465, false for other ports
+  host: "smtp.gmail.com",
+  port: 587,
+  secure: false, // true only for port 465
   auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASSWORD,
+    user: "harish.auspicioussoft@gmail.com",
+    pass: "eavzdrldudsfznha",
   },
 });
+
+export default transporter;
 
 // Verify connection
 transporter.verify((error, success) => {
