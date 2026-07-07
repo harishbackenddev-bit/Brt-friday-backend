@@ -606,18 +606,19 @@ export const requestPartialPaymentService = async (payload: any, res: Response) 
 
     const fullName = `${firstName} ${lastName}`.trim();
 
+    // ✅ Send confirmation email to user
     try {
-      await sendAdminCallbackNotification(
-        fullName,
+      await sendCallbackConfirmationEmail(
         email,
-        phoneNumber,
-        whatsapp || "",
-        "partial",
-        ticket.ticketId
+        fullName,
+        callback._id.toString(),
+        phone,
+        whatsapp,
+        plan
       );
-      console.log("✅ Admin notified of new partial payment request:", ticket.ticketId);
+      console.log('✅ Callback confirmation email sent to:', email);
     } catch (emailError) {
-      console.error("❌ Failed to notify admin of partial payment request:", emailError);
+      console.error('❌ Failed to send callback email:', emailError);
     }
 
     return {
