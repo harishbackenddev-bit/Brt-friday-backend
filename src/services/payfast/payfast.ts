@@ -612,7 +612,7 @@ export const requestPartialPaymentService = async (payload: any, res: Response) 
         email,
         fullName,
         ticket._id.toString(),
-        phone,
+        phoneNumber,
         whatsapp,
         plan
       );
