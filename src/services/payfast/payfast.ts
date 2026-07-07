@@ -614,7 +614,7 @@ export const requestPartialPaymentService = async (payload: any, res: Response) 
         ticket._id.toString(),
         phoneNumber,
         whatsapp,
-        plan
+       "partial"
       );
       console.log('✅ Callback confirmation email sent to:', email);
     } catch (emailError) {
